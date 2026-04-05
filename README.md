@@ -27,10 +27,16 @@ the build-time dependencies of laim are:
 
 these all serve the purpose of making the laim binary as tiny as possible.
 
+## usage instructions
+
+just read `docs.txt`. that file is also included when you build laim, and extracts via `--open`.
+
+you can also jump into it and immediately compile and run laim, to get a feel for how it works.
+
 ## distribution / license
 
 you can modify, rename, expand, strip down, distribute, or do anything else with laim and anything included in this repository (excluding the license section) with one condition:
 
-if you share an executable build of laim, or any other medium of sharing laim in a way that makes the source code hard to access, the `--open` flag or the `--source` flag must always be present on the laim binary, and they must always reproduce the entire, exact source code, which was used to build that version of laim. this includes the source code for every step of the way, so, embedding the binary blob inside a C file and making that source-available doesn't count.
+if you share an executable build of laim, or any other medium of sharing laim in a way that makes the source code hard to access, the `--open` flag or the `--source` flag must always be present on the laim binary, and they must always reproduce the entire, exact, unobfuscated and decrypted source code, which was used to build that version of laim. this includes the source code for every step of the way, so, embedding the binary blob inside a C file and making that source-available doesn't count.
 
 my name is moon and this is my license
