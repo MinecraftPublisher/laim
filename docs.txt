@@ -1,0 +1,100 @@
+-- news
+
+2026-04-04
+    welcome to laim 0.2!
+    this version now transmits `\2` as its version number.
+    it introduces a few changes to the legacy laim, such as two new commands: W and E,
+    changed spec sheet from raw u64 input to a readable number, making it easier to use laim manually,
+    and a bunch of structural changes, including putting each mail into its own file!
+
+-- specs
+
+proto
+    > is outgoing (client)
+    < is incoming (server)
+CONNECT
+    server response:
+        < laim
+        < \2          (byte = two, version)
+        < \n          (the common sequence finish in laim)
+    actions:
+        > M
+            gets server motd, newline-terminated
+        > L
+            > username
+            > \n
+            > password
+            > \n
+            commence server login.
+            possible results:
+            < (           (this is the second half of a sad face. means you had a slash in your username.)
+            < 4    	     (this means you didn't send a newline after your username.)
+            < 5           (this means you didn't send a newline after your password.)
+            < N           (Non-existent user.)
+            < I	 		 (Incorrect password. two-second penalty.)
+            < O           (successful auth. now you can access general commands.)
+general commands
+    > G
+        returns all mail for your user
+    > W
+        returns your username. may get funky.
+    > E
+        returns your inbox size, including deleted mail.
+    > B
+        enter broadcast mode. in this state, your inbox is shared with every other user utilizing broadcast mode, and anything you send will be visible by everyone else.
+        use this to chat publicly, advertise protocol, etc.
+    > Q
+        exit broadcast mode. this returns your inbox and outbox to the per-user basis.
+    > U
+        returns a newline-separated list of all the users in this instance, followed by a unix timestamp of their last login.
+        terminates on eof. if a user has never logged in, their timestamp is zero.
+        for when you wanna build your contacts.
+        example:
+        ---
+        jake 0
+        alice 1775284203
+        ---
+    > T
+        > 8-byte timestamp in raw binary format
+        returns all mail for your user after a certain date
+        < 6               (server might return this if your timestamp was not exactly 8 bytes long.)
+    > S
+        > target
+        > \n
+        > content         (max 65536 chars, returns a `.` as a response and terminates the buffer if you send any more than that)
+        > \n\neof\n       (end-of-content delimeter used in laim)
+        sends email to a target of your choice.
+        you can send emails to non-existent users as well.
+        < 7               (might return if the username was cut off at eof without a \n)
+        < .               (returns if you send more than 65536 bytes)
+        < O               (returns after mail has successfully been sent.)
+    > D
+        > 8-byte plain-foratted number
+        deletes mail from your account at a specific index.
+        note that this will NOT shift indexes after the deleted index.
+        < 8               (returns if the deletion was unsuccessful.)
+        < O               (on success.)
+    > C
+        > new password
+        > \n
+        > confirm password
+        > \n
+        changes your password.
+        < K               (non-matching passwords)
+        < O               (success.)
+cheatsheet:
+    < O                   (successful operation)
+    < ?                   (unknown command)
+    < 0-9                 (some kind of failure)
+    < I                   (incorrect credentials)
+    < \n                  (common delimeter)
+    < \n\neof\n           (content end indicator)
+mail is formatted as such:
+    < printf-formatted int index
+    < \n
+    < printf-formatted int timestamp
+    < \n
+    < sender
+    < \n
+    < ... content ...
+    < \n\neof\n
