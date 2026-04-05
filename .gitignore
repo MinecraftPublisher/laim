@@ -1,0 +1,9 @@
+# directores that laim creates
+mail
+users
+# self signed ssl cert
+ssl
+# junk
+extras
+# compiled bin
+laim
