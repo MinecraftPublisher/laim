@@ -1,36 +1,26 @@
-// laim (0.2.3): a lame mail server
-// centeralized design, manual admin sign-up
-// files are easily parsable by other programs, and this can act as a sort of IPC as well.
-// use --boot to run this program over TCP+TLS
-// connect to it with `ncat --ssl <address> <port>`
-// or `nc <address> <port>` if not running under SSL
+// laim (0.2.5): a lame mail server
+// connect to a --boot laim with `ncat --ssl <address> <port>` (requires nmap)
+// or `nc <address> <port>` if not running under SSL (requires netcat or a busybox with the nc applet built)
 //
-// stripped using elfkickers' sstrip
-// compressed using `upx --ultra-brute laim --lzma --no-align`
-//
-// created by Moon Flower Fields (https://coffin.ir/)
-// or @moonflowerfields on Telegram
+// originally created by Moon Flower Fields (https://coffin.ir/) or @moonflowerfields on Telegram
 
 // very funny.
 #define COMEDIAN false
 
-#define SZ  64 + 5 + 1 + 1
+#define SZ  128
 #define EOF -1
 
 #include <fcntl.h>
 #include <stdint.h>
 #include <sys/file.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
-typedef uint64_t u64;
-typedef uint16_t u16;
-typedef uint8_t  u8;
-typedef u8       byte;
-typedef byte bool;
-const bool true  = 1;
-const bool false = 0;
+typedef uint64_t    u64;
+typedef uint16_t    u16;
+typedef uint8_t     u8;
+typedef const char *cstr;
+typedef u8          byte;
 
 struct linux_dirent64 {
     u64  d_ino;
@@ -40,106 +30,204 @@ struct linux_dirent64 {
     char d_name[];
 };
 
-char get_char() {
-GETCHAR_START:;
-    char buf[ 1 ];
-    if (read(STDIN_FILENO, buf, 1) == 0) return EOF;
-    if (buf[ 0 ] == '\r') goto GETCHAR_START; // band-aid fix.
-    return buf[ 0 ];
+#define UCHAR_MAX  (127 * 2 + 1)
+#define ALIGN      (sizeof(size_t))
+#define ONES       ((size_t) -1 / UCHAR_MAX)
+#define HIGHS      (ONES * (UCHAR_MAX / 2 + 1))
+#define HASZERO(x) ((x) - ONES & ~(x) & HIGHS)
+
+size_t lenstr(cstr s) {
+    const char   *a = s;
+    const size_t *w;
+    for (; (uintptr_t) s % ALIGN; s++)
+        if (!*s) return s - a;
+    for (w = (const void *) s; !HASZERO(*w); w++);
+    for (s = (const void *) w; *s; s++);
+    return s - a;
 }
 
-char *sadd(char *p, const char *s) {
-    while (*s) *p++ = *s++;
-    return p;
+char out_buf[ 4096 ];
+int  out_pos = 0;
+
+void flush() {
+    if (out_pos == 0) return; // a branch instead of a syscall? in this economy?!
+    write(STDOUT_FILENO, out_buf, out_pos);
+    out_pos = 0;
 }
 
-void memcopy(char *s, const char *d, u64 len) {
+void memcopy(char *s, cstr d, u64 len) {
     for (u64 i = 0; i < len; i++) s[ i ] = d[ i ];
 }
 
-void memzero(char* s, u64 len) {
-    for (u64 i = 0; i < len; i++) s[i] = 0;
+void writeb(cstr s, u64 len) {
+    if (out_pos + len > (u64) sizeof(out_buf)) flush();
+    if (len > (u64) sizeof(out_buf)) {
+        write(STDOUT_FILENO, s, len);
+        return;
+    }
+    memcopy(out_buf + out_pos, s, len);
+    out_pos += len;
 }
 
-char *nadd(char *p, u64 n) {
-    if (!n) {
-        *p++ = '0';
-        return p;
+void writes(cstr s) { writeb(s, lenstr(s)); }
+
+char in_buf[ 4096 ];
+u64  in_pos = 0;
+u64  in_len = 0;
+
+int readn(char *buf, int n) {
+    if (out_pos != 0) flush(); // a branch over a syscall? in this economy?!
+    int avail = in_len - in_pos;
+    if (avail > 0) {
+        if (avail > n) avail = n;
+        memcopy(buf, in_buf + in_pos, avail);
+        in_pos += avail;
+        return avail;
     }
-    char tmp[ 20 ];
-    int  i = 20;
+    return read(STDIN_FILENO, buf, n);
+}
+
+int get_char() {
+    if (in_pos == in_len) {
+        in_len = readn(in_buf, sizeof(in_buf));
+        in_pos = 0;
+        if (in_len <= 0) return EOF;
+    } else if (out_pos != 0)
+        flush();
+    int c = (unsigned char) in_buf[ in_pos++ ];
+    if (c == '\r') return get_char();
+    return c;
+}
+
+// burst into flames if uninitialized
+char *glob_buf = NULL;
+u64   glob_sz  = 0;
+
+// clang-format off
+void sadd(cstr s) { char *prev = glob_buf; while (*s) *glob_buf++ = *s++; glob_sz += glob_buf - prev; }
+
+#define over __attribute__((overloadable)) void
+over sit(char *p, cstr s) { glob_buf = p; glob_sz  = 0; sadd(s); }
+over sit(char *p, cstr s, cstr s2) { sit(p, s); sadd(s2); }
+over sit(char *p, cstr s, cstr s2, cstr s3) { sit(p, s); sadd(s2); sadd(s3); }
+
+void memzero(char *s, u64 len) { for (u64 i = 0; i < len; i++) s[ i ] = 0; }
+
+void nadd(u64 n) {
+    if (!n) {
+        *glob_buf++ = '0';
+        glob_sz++;
+        return;
+    }
+    char tmp[ 20 ] = { 0 };
+    u8   i         = 20;
     while (n) {
         tmp[ --i ] = '0' + (n % 10);
         n /= 10;
     }
-    int len = 20 - i;
-    memcopy(p, tmp + i, len);
-    return p + len;
+    u8 len = 20 - i;
+    memcopy(glob_buf, tmp + i, len);
+    glob_buf += len;
+    glob_sz += len;
 }
+void nlod(char *p, u64 n) { glob_buf = p; glob_sz = 0; nadd(n); }
+// clang-format on
 
 void print_u64(u64 n) {
-    char  tmp[ 20 ];
-    char *p = nadd(tmp, n);
-    write(STDOUT_FILENO, tmp, p - tmp);
+    static char tmp[ 21 ] = { 0 };
+    nlod(tmp, n);
+    writeb(tmp, glob_sz);
 }
 
-typedef struct {
-    char buf[ 21 ];
-    int  len;
-} u64str;
-
-u64str str_u64(u64 n) {
-    u64str s;
-    char  *p = nadd(s.buf, n);
-    *p       = 0;
-    s.len    = p - s.buf;
+char *str_u64(u64 n) {
+    static char s[ 21 ];
+    nlod(s, n);
+    *glob_buf = 0;
     return s;
 }
 
 u64 scan_u64() {
     u64  n = 0;
-    char tsbuf[ 21 ];
-    int  len = read(STDIN_FILENO, tsbuf, sizeof(tsbuf) - 1);
-    for (int i = 0; i < len; i++) {
-        if (tsbuf[ i ] >= '0' && tsbuf[ i ] <= '9') n = n * 10 + (tsbuf[ i ] - '0');
-        else
-            break;
+    char c;
+    while ((c = get_char()) != EOF) {
+        if (c < '0' || c > '9') break;
+        n = n * 10 + (c - '0');
     }
     return n;
 }
 
-u64 lenstr(const char *str) {
-    u64 i = 0;
-    while (str[i]) i++;
-    return i;
+long syscall(long number, ...);
+
+u64 now() {
+    struct timespec ts;
+    syscall(228, 0, &ts);
+    return ts.tv_sec;
 }
 
-void writes(const char *string) { write(STDOUT_FILENO, string, lenstr(string)); }
+u64 room_user_count(char *room_path) {
+    static char members_path[ SZ ];
+    sit(members_path, room_path, ".members/");
+    *glob_buf = 0;
 
-void list_users(int dir_fd) {
-    char buf[ 1024 ];
-    int  n;
+    int dir_fd = open(members_path, O_RDONLY | O_DIRECTORY);
+    if (dir_fd < 0) return 0;
+
+    static char buf[ 1024 ];
+    u64         count = 0;
+    int         n;
     while ((n = syscall(217, dir_fd, buf, sizeof(buf))) > 0) {
         for (int off = 0; off < n;) {
             struct linux_dirent64 *d = (struct linux_dirent64 *) (buf + off);
             if (d->d_name[ 0 ] != '.') {
-                write(STDOUT_FILENO, d->d_name, lenstr(d->d_name));
-                char  lastlogin[ SZ ] = { 0 };
-                char *p               = lastlogin;
-                p                     = sadd(p, "mail/");
-                p                     = sadd(p, d->d_name);
-                p                     = sadd(p, "/.login");
-                int login_fd          = open(lastlogin, O_RDONLY);
-                if (login_fd >= 0) {
-                    u64 ts;
-                    read(login_fd, &ts, 8);
-                    writes(" ");
-                    print_u64(ts);
-                    writes("\n");
-                    close(login_fd);
-                } else {
-                    writes(" 0\n");
+                int fd = openat(dir_fd, d->d_name, O_RDONLY);
+                if (fd >= 0) {
+                    if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+                        // dead owner
+                        flock(fd, LOCK_UN);
+                        unlinkat(dir_fd, d->d_name, 0);
+                    } else {
+                        count++;
+                    }
+                    close(fd);
                 }
+            }
+            off += d->d_reclen;
+        }
+    }
+    close(dir_fd);
+    return count;
+}
+
+void list_users(int dir_fd, bool rooms) {
+    static char buf[ 1024 ];
+    u64         n;
+    while ((n = syscall(217, dir_fd, buf, 1024)) > 0) {
+        for (u64 off = 0; off < n;) {
+            struct linux_dirent64 *d;
+            d         = (struct linux_dirent64 *) (buf + off);
+            cstr name = d->d_name;
+            if (*name != '.' && rooms ^ (*name != '~')) {
+                writeb(name, lenstr(name));
+                writes(" ");
+                if (rooms) {
+                    static char rp[ SZ ];
+                    sit(rp, "mail/", name, "/");
+                    *glob_buf = 0;
+                    print_u64(room_user_count(rp));
+                } else {
+                    char lastlogin[ SZ ] = { 0 };
+                    sit(lastlogin, "mail/", name, "/.login");
+                    int login_fd = open(lastlogin, O_RDONLY);
+                    if (login_fd >= 0) {
+                        u64 ts;
+                        read(login_fd, &ts, 8);
+                        print_u64(ts);
+                        close(login_fd);
+                    } else {
+                        writes(" 0\n");
+                    }
+                }
+                writes("\n");
             }
             off += d->d_reclen;
         }
@@ -173,8 +261,8 @@ void printmail(char path[ SZ ], u64 after) {
     close(cfd);
 
     for (u64 i = 0; i < total; i++) {
-        u64str name    = str_u64(i);
-        int    mail_fd = openat(dir_fd, name.buf, O_RDONLY);
+        char *name    = str_u64(i);
+        int   mail_fd = openat(dir_fd, name, O_RDONLY);
         if (mail_fd < 0) continue;
         flock(mail_fd, LOCK_SH);
 
@@ -187,13 +275,13 @@ void printmail(char path[ SZ ], u64 after) {
 
         u64  ts = 0;
         char tsbuf[ 21 ];
-        int  n = read(mail_fd, tsbuf, sizeof(tsbuf) - 1);
+        u64  n = read(mail_fd, tsbuf, sizeof(tsbuf) - 1);
         if (n <= 0) {
             close(mail_fd);
             continue;
         }
         tsbuf[ n ] = 0;
-        for (int j = 0; j < n; j++) {
+        for (u64 j = 0; j < n; j++) {
             if (tsbuf[ j ] >= '0' && tsbuf[ j ] <= '9') ts = ts * 10 + (tsbuf[ j ] - '0');
             else {
                 lseek(mail_fd, j - n, SEEK_CUR);
@@ -206,16 +294,16 @@ void printmail(char path[ SZ ], u64 after) {
             continue;
         }
 
-        char *p, header[ 64 + 1 ] = { 0 };
-        p    = nadd(header, i);
-        *p++ = '\n';
-        write(STDOUT_FILENO, header, p - header);
-        p = nadd(header, ts);
-        write(STDOUT_FILENO, header, p - header);
+        static char header[ SZ ] = { 0 };
+        nlod(header, i);
+        *glob_buf++ = '\n';
+        writeb(header, ++glob_sz);
+        nlod(header, ts);
+        writeb(header, glob_sz);
 
-        char buf[ 256 ];
-        int  r;
-        while ((r = read(mail_fd, buf, sizeof(buf))) > 0) write(STDOUT_FILENO, buf, r);
+        static char buf[ 256 ];
+        int         r;
+        while ((r = read(mail_fd, buf, sizeof(buf))) > 0) writeb(buf, r);
 
         writes("\n\neof\n");
         close(mail_fd);
@@ -249,23 +337,23 @@ const char source[] = {
     , 0
 };
 const char makefile[] = {
-	#embed "Makefile"
-	, 
+#embed "Makefile"
+    , 0
 };
 
 // used for both passwords and usernames.
 // not my fault if you wanna use a weird pass.
 bool is_path_char(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.'
-           || c == ' ' || c == '$';
+           || c == ' ' || c == '$' || c == ':';
 }
 
 #define read_field(buf, err, fail_action, len_buf)                                                                             \
     ({                                                                                                                         \
         bool _term = false;                                                                                                    \
         for (u8 _i = 0; _i < 64; _i++) {                                                                                       \
-            (buf)[ _i ] = get_char();                                                                                          \
-            if ((buf)[ _i ] == '\n') {                                                                                         \
+            int _ch = get_char();                                                                                              \
+            if (_ch == '\n' || _ch == EOF) {                                                                                   \
                 (buf)[ _i ] = 0;                                                                                               \
                 _term       = true;                                                                                            \
                 if (len_buf != NULL) {                                                                                         \
@@ -274,10 +362,11 @@ bool is_path_char(char c) {
                 }                                                                                                              \
                 break;                                                                                                         \
             }                                                                                                                  \
-            if (!is_path_char((buf)[ _i ])) {                                                                                  \
+            if (!is_path_char((char) _ch)) {                                                                                   \
                 writes(err);                                                                                                   \
                 fail_action;                                                                                                   \
             }                                                                                                                  \
+            (buf)[ _i ] = (char) _ch;                                                                                          \
         }                                                                                                                      \
         if (!_term) {                                                                                                          \
             writes(err);                                                                                                       \
@@ -297,15 +386,51 @@ bool safe_cmp(char *left, char *right, u64 size) {
     return !nonmatch;
 }
 
-void openwrite(char *filename, const char *content) {
+void openwrite(char *filename, cstr content) {
     int fd = open(filename, O_RDWR | O_CREAT, 0600);
     write(fd, content, lenstr(content));
     close(fd);
 }
 
+char       *filename;
+char       *count_filename;
+int         member_fd         = -1;
+bool        ephemeral         = false;
+static char member_file[ SZ ] = { 0 };
+
+void leave_room() {
+    if (member_fd < 0) return;
+
+    flock(member_fd, LOCK_UN);
+    close(member_fd);
+    member_fd = -1;
+    unlink(member_file);
+    if (ephemeral && room_user_count((char *) filename) == 0) {
+        static char mp2[ SZ ];
+        sit(mp2, filename, ".members/");
+        *glob_buf = 0;
+        rmdir(mp2);
+        int cfd2   = open(count_filename, O_RDONLY);
+        u64 total2 = 0;
+        if (cfd2 >= 0) {
+            read(cfd2, &total2, 8);
+            close(cfd2);
+        }
+        for (u64 i = 0; i < total2; i++) {
+            static char mp[ SZ ];
+            sit(mp, filename, str_u64(i));
+            *glob_buf = 0;
+            unlink(mp);
+        }
+        unlink(count_filename);
+        rmdir(filename);
+    }
+    ephemeral = false;
+}
+
 int main(int argc, char **argv) {
-    char path[ 4096 ] = {0};
-	readlink("/proc/self/exe", path, sizeof(path) - 1);
+    char path[ 4096 ] = { 0 };
+    { u64 bye = readlink("/proc/self/exe", path, sizeof(path) - 1); }
 
     if (argc > 1) {
         if (safe_cmp(argv[ 1 ], "--help", 6) || safe_cmp(argv[ 1 ], "-h", 2)) {
@@ -355,9 +480,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    char user[ 64 + 1 ] = { 0 }, pass[ 64 + 1 ] = { 0 };
+    char user[ 65 ] = { 0 }, pass[ 65 ] = { 0 };
     u8   userlen = 0;
-    // v=1
     writes("laim\2\n");
 
     // manipulates:
@@ -365,28 +489,27 @@ int main(int argc, char **argv) {
     // mail/     - mails directory, each filename is a username
     mkdir("users", 0700);
     mkdir("mail", 0700);
-    mkdir("mail/broadcast", 0700);
 
-__BACK_TO_START:;
+laim_start:;
     memzero(user, 65);
     memzero(pass, 65);
     int action = get_char();
     if (action == 'M') {
         writes(motd);
-        goto __BACK_TO_START;
+        goto laim_start;
     } else if (action == 'L') {
         // username
-        read_field(user, "4", goto __BACK_TO_START, &userlen);
+        read_field(user, "4", goto laim_start, &userlen);
         // password
-        read_field(pass, "5", goto __BACK_TO_START, NULL);
+        read_field(pass, "5", goto laim_start, NULL);
 
-        char user_path[ 5 + 1 + 64 + 1 ] = "users/";
+        char user_path[ SZ ] = "users/";
         memcopy(user_path + 6, user, userlen);
         user_path[ 6 + userlen ] = 0;
 
         if (access(user_path, F_OK) != 0) {
             writes("N");
-            goto __BACK_TO_START;
+            goto laim_start;
         }
 
         int fd = open(user_path, O_RDONLY);
@@ -397,10 +520,10 @@ __BACK_TO_START:;
         char actual_pass[ 65 ]   = { 0 };
         int  pass_size           = read(fd, actual_pass, 64);
         actual_pass[ pass_size ] = 0;
-        if (!safe_cmp(pass, actual_pass, 64)) { // safe timing or whatever.
+        if (!safe_cmp(pass, actual_pass, 64)) {
             writes("I");
-            sleep(2); // punish user
-            goto __BACK_TO_START;
+            sleep(2); // punish user for null
+            goto laim_start;
         }
         memzero(actual_pass, 65);
         close(fd);
@@ -410,48 +533,39 @@ __BACK_TO_START:;
         return 1;
     } else {
         writes("?");
-        goto __BACK_TO_START;
+        goto laim_start;
     }
 
     // -- authorized from here on out --
 
     { // write last login
-        char  last_login[ SZ ] = { 0 };
-        char *p                = last_login;
-        p                      = sadd(p, "mail/");
-        p                      = sadd(p, user);
-        p                      = sadd(p, "/.login");
-        int login_fd           = open(last_login, O_RDWR | O_CREAT, 0600);
+        char last_login[ SZ ] = { 0 };
+        sit(last_login, "mail/", user, "/.login");
+        int login_fd = open(last_login, O_RDWR | O_CREAT, 0600);
         if (login_fd >= 0) {
             ftruncate(login_fd, 0);
-            u64 ts = time(NULL);
+            u64 ts = now();
             write(login_fd, &ts, 8);
             close(login_fd);
         }
     }
 
-    bool broadcast_mode = false; // kinda useless. may delete. TODO
-
     // remove password from memory
     memzero(pass, 65);
 
     // make sure user has a mail dir
-    char  user_filename[ SZ ] = { 0 };
-    char *p                   = user_filename;
-    p                         = sadd(p, "mail/");
-    p                         = sadd(p, user);
-    p                         = sadd(p, "/");
+    char user_filename[ SZ ] = { 0 };
+    sit(user_filename, "mail/", user, "/");
     mkdir(user_filename, 0700);
 
     char user_count_filename[ SZ ] = { 0 };
-    p                              = sadd(user_count_filename, user_filename);
-    p                              = sadd(p, ".count");
+    sit(user_count_filename, user_filename, ".count");
 
-    char broadcast_filename[ SZ ]       = "mail/broadcast/";
-    char broadcast_count_filename[ SZ ] = "mail/broadcast/.count";
+    static char room_path[ SZ ]       = { 0 };
+    static char room_count_path[ SZ ] = { 0 };
 
-    char *filename       = user_filename;
-    char *count_filename = user_count_filename;
+    filename       = user_filename;
+    count_filename = user_count_filename;
 
     int _c;
     while ((_c = get_char()) != EOF) {
@@ -459,6 +573,7 @@ __BACK_TO_START:;
         char c = _c;
         if (c == 'G') { // get all mail
             printmail(filename, 0);
+            writes("O");
         } else if (c == 'W') { // whoami
             if (COMEDIAN) writes("you're... you!");
             else { writes(user); }
@@ -467,7 +582,7 @@ __BACK_TO_START:;
             int count_fd = open(count_filename, O_RDONLY);
             if (count_fd < 0) err("!");
             u64 result = 0;
-            int size   = read(count_fd, &result, 8);
+            u64 size   = read(count_fd, &result, 8);
             if (size < 8) {
                 close(count_fd);
                 err("!");
@@ -475,37 +590,65 @@ __BACK_TO_START:;
             close(count_fd);
             print_u64(result);
             writes("\n");
-        } else if (c == 'B') { // turn on broadcast mode.
-            broadcast_mode = true;
-            filename       = broadcast_filename;
-            count_filename = broadcast_count_filename;
+        } else if (c == 'B') {
+            leave_room();
+
+            char room[ 64 + 1 ];
+            u8   len;
+            read_field(room, "7", goto while_end, &len);
+            if (len == 0) sit(room_path, "mail/~hub/");
+            else { sit(room_path, "mail/~", room, "/"); }
+            ephemeral = (len > 0 && room[ 0 ] == ':');
+            *glob_buf = 0;
+            mkdir(room_path, 0700);
+            sit(room_count_path, room_path, ".count");
+            *glob_buf = 0;
+            int cfd   = open(room_count_path, O_RDWR | O_CREAT | O_EXCL, 0600);
+            if (cfd >= 0) {
+                u64 zero = 0;
+                write(cfd, &zero, 8);
+                close(cfd);
+            }
+            filename       = room_path;
+            count_filename = room_count_path;
+
+            static char members_path[ SZ ];
+            sit(members_path, room_path, ".members/");
+            *glob_buf = 0;
+            mkdir(members_path, 0700);
+
+            u64 pid = syscall(39); // getpid
+            sit(member_file, members_path, str_u64(pid));
+            *glob_buf = 0;
+
+            member_fd = open(member_file, O_RDWR | O_CREAT, 0600);
+            flock(member_fd, LOCK_EX);
+
             writes("O");
-        } else if (c == 'Q') { // turn off broadcast mode.
-            broadcast_mode = false;
+        } else if (c == 'Q') { // turn off broadcast mode
+            leave_room();
+
             filename       = user_filename;
             count_filename = user_count_filename;
             writes("O");
-        } else if (c == 'U') { // list all users
-            int dir_fd = open("users/", O_RDONLY | O_DIRECTORY);
+        } else if (c == 'U' || c == 'R') { // unified listing
+            int dir_fd = open(c == 'R' ? "mail/" : "users/", O_RDONLY | O_DIRECTORY);
             if (dir_fd < 0) {
                 writes("err:dir\n");
                 continue;
             }
-            list_users(dir_fd);
+            list_users(dir_fd, c == 'R');
             close(dir_fd);
         } else if (c == 'T') { // get mail after X
             printmail(filename, scan_u64());
         } else if (c == 'S') { // send mail
-            char target[ 64 + 1 ];
-            read_field(target, "7", goto __WHILE_END, NULL);
+            char target[ SZ ];
+            read_field(target, "7", goto while_end, NULL);
 
-            char dest_path[ 64 + 5 + 1 + 20 + 1 ];
-            p = sadd(dest_path, "mail/");
-            p = sadd(p, target);
-            p = sadd(p, "/");
+            char dest_path[ SZ ] = { 0 };
+            sit(dest_path, "mail/", target, "/");
             mkdir(dest_path, 0700);
 
-            // lock directory and calculate size to prevent issues
             int dir_fd = open(dest_path, O_RDONLY | O_DIRECTORY);
             if (dir_fd < 0) {
                 writes("err:dir\n");
@@ -516,12 +659,12 @@ __BACK_TO_START:;
             u64 index = create_index(dir_fd);
             if (index == -1) {
                 writes("!");
+                sopen(dir_fd);
+                close(dir_fd);
                 continue;
             }
-            p = sadd(dest_path, "mail/");
-            p = sadd(p, target);
-            p = sadd(p, "/");
-            p = nadd(p, index);
+            sit(dest_path, "mail/", target, "/");
+            nadd(index);
 
             int user_fd = smake(dest_path);
             if (user_fd < 0) {
@@ -534,20 +677,20 @@ __BACK_TO_START:;
             sopen(dir_fd);
             close(dir_fd);
 
-            u64 timestamp = time(NULL);
-            print_u64(timestamp);
-            writes("\n");
-            writes(user);
-            writes("\n");
+            char *ts = str_u64(now());
+            write(user_fd, ts, lenstr(ts));
+            write(user_fd, "\n", 1);
+            write(user_fd, user, userlen);
+            write(user_fd, "\n", 1);
 
             bool hit_limit = false;
 
             u64  total_size = 0;
-            char buf[ 256 ];
+            char buf[ 256 ] = { 0 };
             int  read_size;
-            while ((read_size = read(STDIN_FILENO, buf, 256)) != 0 && read_size > 0) {
-                total_size += read_size;
+            while ((read_size = readn(buf, sizeof(buf))) > 0) {
                 write(user_fd, buf, read_size);
+                total_size += read_size;
                 if (total_size > 65536) {
                     hit_limit = true;
                     writes(".");
@@ -562,38 +705,40 @@ __BACK_TO_START:;
         } else if (c == 'D') { // delete mail
             u64 index = scan_u64();
 
-            char dest_path[ 64 + 5 + 1 + 20 + 1 ];
-            p = sadd(dest_path, filename);
-            p = nadd(p, index);
+            char dest_path[ SZ ] = { 0 };
+            sit(dest_path, filename);
+            nadd(index);
             if (unlink(dest_path) < 0) err("8");
             else { err("O"); }
         } else if (c == 'C') { // change password
-            char newpass[ 65 ], newpass2[ 65 ];
-            u8 passlen, passlen2;
-            read_field(newpass, "6", goto __WHILE_END, &passlen);
-            read_field(newpass2, "7", goto __WHILE_END, &passlen2);
+            char newpass[ 65 ] = { 0 }, newpass2[ 65 ] = { 0 };
+            u8   passlen, passlen2;
+            read_field(newpass, "6", goto while_end, &passlen);
+            read_field(newpass2, "7", goto while_end, &passlen2);
 
-            // passwords don't match
             if (passlen != passlen2) err("K");
-            if (safe_cmp(newpass, newpass2, passlen) != 0) err("K");
+            if (safe_cmp(newpass, newpass2, passlen)) err("K");
 
-            char user_path[ 6 + 64 + 1 ] = "users/";
+            char user_path[ SZ ] = "users/";
             memcopy(user_path + 6, user, userlen);
             user_path[ 6 + userlen ] = 0;
 
             int ufd = smake(user_path);
             if (ufd < 0) err("8");
             slock(ufd);
-            int newpass_len = lenstr(newpass);
+            u8 newpass_len = lenstr(newpass);
             write(ufd, newpass, newpass_len);
-            ftruncate(ufd, newpass_len); // if newpass_len < oldpass_len
+            ftruncate(ufd, newpass_len);
+
             sopen(ufd);
             close(ufd);
             writes("O");
+        } else if (c == 'K') { // exit client
+            break;
         } else {
             writes("?");
         }
-    __WHILE_END:;
+    while_end:;
     }
 
     return 0;
