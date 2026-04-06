@@ -1,0 +1,126 @@
+((OUTDATED DOCUMENTATION))
+
+-- news
+
+2026-04-05
+    #0.2.5
+        various bug fixes, modified broadcast functionality, ephemeral rooms
+    #0.2.4
+        added a new command: 'K'
+
+2026-04-04
+    #0.2
+        the version has been bumped to 2.
+        it introduces a few changes to the legacy laim, such as two new commands: W and E,
+        binary LE u64 input has been converted into a plain number read.
+        there were a bunch of structural changes, including putting each mail into its own file!
+
+-- specs
+
+proto
+    > is outgoing (client)
+    < is incoming (server)
+CONNECT
+    server response:
+        < laim
+        < \2          (byte = two, version)
+        < \n          (the common sequence finish in laim)
+    actions:
+        (names that have a `+` next to them return O on success)
+        > M
+            gets server motd, newline-terminated
+        > L +
+            > username
+            > \n
+            > password
+            > \n
+            commence server login.
+            possible results:
+            < (           (this is the second half of a sad face. means you had a slash in your username.)
+            < 4           (this means you didn't send a newline after your username.)
+            < 5           (this means you didn't send a newline after your password.)
+            < N           (Non-existent user.)
+            < I           (Incorrect password. two-second penalty.)
+            < O           (successful auth. now you can access general commands.)
+general commands
+    > G +
+        returns all mail for your user
+    > W
+        returns your username. may get funky.
+    > E
+        returns your inbox size, including deleted mail.
+    > B +
+        > room name, or EOF/`\n` to default to hub
+        enter broadcast mode. in this state, your inbox is shared with every other user in the same room, and anything you send will be visible by everyone else in the room.
+        use this to chat publicly, advertise protocol, etc.
+    > Q +
+        exit broadcast mode. this returns your inbox and outbox to the per-user basis.
+    > U
+        returns a newline-separated list of all the users in this instance, followed by a unix timestamp of their last login.
+        terminates on eof. if a user has never logged in, their timestamp is zero.
+        for when you wanna build your contacts.
+        example:
+        ---
+        jake 0
+        alice 1775284203
+        ---
+    > R
+        returns a newline-separated list of all existing rooms.
+        unlike `U`, this one does not contain timestamps.
+    > T
+        > printable u64 string
+        returns all mail for your user after a certain date
+        < 6               (server might return this if your timestamp was not exactly 8 bytes long.)
+    > S +
+        > target(s)       (comma-separated list of up to max_targets recipients. default is 16.)
+        > \n
+        > content         (max 65536 chars, returns a `.` as a response and terminates the buffer if you send any more than that)
+        > EOF             (the actual, EOF signal. -1.)
+        sends mail to a target of your choice.
+        you can send mail to non-existent users as well.
+        < 7               (might return if the username was cut off at eof without a \n)
+        < .               (returns if you send more than 65536 bytes)
+    > H +
+        > target(s)       (same as S)
+        > \n
+        > ttl             (u64 printable. time-to-live for the mail, in seconds)
+        > \n
+        > content         (same as S)
+        > EOF             (same as S)
+        sends mail to a target of your choice, that gets deleted after-read, if its TTL has expired.
+        you can send mail to non-existent users as well, but they will not be deleted unless the user signs up and reads their inbox.
+        < 7               (same as S)
+        < .               (same as S)
+    > D
+        > 8-byte plain-foratted number
+        deletes mail from your account at a specific index.
+        note that this will NOT shift indexes after the deleted index.
+        < 8               (returns if the deletion was unsuccessful.)
+        < O               (on success.)
+    > C +
+        > new password
+        > \n
+        > confirm password
+        > \n
+        changes your password.
+        < K               (non-matching passwords)
+        < O               (success.)
+    > K
+        returns nothing.
+        exits laim.
+cheatsheet:
+    < O                   (successful operation)
+    < ?                   (unknown command)
+    < 0-9                 (some kind of failure)
+    < I                   (incorrect credentials)
+    < \n                  (common delimeter)
+    < \n\neof\n           (content end indicator)
+mail is formatted as such:
+    < printf-formatted int index
+    < \n
+    < printf-formatted int timestamp
+    < \n
+    < sender
+    < \n
+    < ... content ...
+    < \n\neof\n
