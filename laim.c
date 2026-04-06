@@ -1,4 +1,4 @@
-// laim (0.2.6b): a lame mail server
+// laim (0.2.6b2): a lame mail server
 //
 // creator: moon flower fields
 // website: coffin.ir
@@ -14,6 +14,8 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <sys/file.h>
+#include <sys/inotify.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -530,10 +532,17 @@ char *read_body(u64 *body_len_out) {
     return body;
 }
 
-int main(int argc, char **argv) {
-    char path[ 4096 ] = { 0 };
-    { u64 bye = readlink("/proc/self/exe", path, sizeof(path) - 1); }
+// exits on any stdin
+bool intersleep(u64 ms) {
+    struct timeval tv = { .tv_sec = ms / 1000, .tv_usec = (ms % 1000) * 1000 };
+    fd_set         fds;
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    int r = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    return r == 0;
+}
 
+int main(int argc, char **argv) {
     if (argc > 1) {
         if (safe_cmp(argv[ 1 ], "--help", 6) || safe_cmp(argv[ 1 ], "-h", 2)) {
             writes(
@@ -574,7 +583,9 @@ int main(int argc, char **argv) {
                 writes("too many / too little args, read --help\n");
                 return 1;
             }
-            char *new_argv[] = { "tcpsvd", "-v", argv[ 2 ], argv[ 3 ], "ssl_server", "-f", argv[ 4 ], path };
+            char  path[ 4096 ] = { 0 };
+            u64   bye          = readlink("/proc/self/exe", path, sizeof(path) - 1);
+            char *new_argv[]   = { "tcpsvd", "-v", argv[ 2 ], argv[ 3 ], "ssl_server", "-f", argv[ 4 ], path };
             execvp("busybox", new_argv);
         } else {
             writes("unknown arg\n");
@@ -622,11 +633,12 @@ laim_start:;
                 close(login_fd);
             }
             if (old_pid > 0) syscall(62, old_pid, 9); // kill old
-            if (now() - old_ts < 5) sleep(1); // fly swatter
+            if (now() - old_ts < 5) sleep(1);         // fly swatter
         }
 
         if (access(user_path, F_OK) != 0) {
-            writes("N");
+            writes("I");
+            sleep(1);
             goto laim_start;
         }
 
@@ -664,7 +676,7 @@ laim_start:;
             ftruncate(login_fd, 0);
             u64 ts  = now();
             u64 pid = syscall(39); // getpid
-            write(login_fd, &ts,  8);
+            write(login_fd, &ts, 8);
             write(login_fd, &pid, 8);
             close(login_fd);
         }
@@ -811,14 +823,83 @@ laim_start:;
                 goto while_end;
             }
             writes("O");
-        } else if (c == 'D') { // delete mail
+        } else if (c == 'P') { // polling mode
+            // scan for file change and stdin
+            // exit on stdin or file deletion
+            int ifd = inotify_init();
+            inotify_add_watch(ifd, count_filename, IN_ALL_EVENTS);
+
+            u64 after = now();
+
+            writes(">");
+            flush();
+            while (true) {
+                fd_set fds;
+                FD_ZERO(&fds);
+                FD_SET(STDIN_FILENO, &fds);
+                FD_SET(ifd, &fds);
+                int nfds = (ifd > STDIN_FILENO ? ifd : STDIN_FILENO) + 1;
+                select(nfds, &fds, NULL, NULL, NULL);
+
+                if (FD_ISSET(STDIN_FILENO, &fds)) break;
+
+                struct inotify_event ev;
+                read(ifd, &ev, sizeof(ev));
+
+                if (ev.mask & (IN_DELETE_SELF | IN_MOVE_SELF | IN_IGNORED)) break;
+
+                printmail(filename, after);
+                after = now();
+                flush();
+            }
+
+            close(ifd);
+            writes("O");
+        } else if (c == 'D') {
+            // replaces indexed mail with last mail
+            // always delete last-to-first
             u64 index = scan_u64();
 
-            char dest_path[ SZ ] = { 0 };
-            sit(dest_path, filename);
-            nadd(index);
-            if (unlink(dest_path) < 0) err("8");
-            else { err("O"); }
+            int dir_fd = open(filename, O_PATH | O_DIRECTORY);
+            if (dir_fd < 0) err("8");
+
+            int cfd = openat(dir_fd, ".count", O_RDWR);
+            if (cfd < 0) {
+                close(dir_fd);
+                err("8");
+            }
+
+            u64 total = 0;
+            read(cfd, &total, 8);
+            if (total == 0 || index >= total) {
+                close(cfd);
+                close(dir_fd);
+                err("8");
+            }
+
+            u64 last = --total;
+            if (index != last) {
+                char src[ SZ ], dst[ SZ ];
+                nlod(src, last);
+                *glob_buf = 0;
+                nlod(dst, index);
+                *glob_buf = 0;
+                if (syscall(264, dir_fd, src, dir_fd, dst) < 0) {
+                    close(cfd);
+                    close(dir_fd);
+                    err("8");
+                }
+            }
+
+            unlinkat(dir_fd, str_u64(last), 0);
+
+            lseek(cfd, 0, SEEK_SET);
+            write(cfd, &total, 8);
+            ftruncate(cfd, 8);
+
+            close(cfd);
+            close(dir_fd);
+            writes("O");
         } else if (c == 'C') { // change password
             char newpass[ 65 ] = { 0 }, newpass2[ 65 ] = { 0 };
             u8   passlen, passlen2;
