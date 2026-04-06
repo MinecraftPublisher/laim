@@ -1,14 +1,15 @@
-// laim (0.2.5): a lame mail server
-// connect to a --boot laim with `ncat --ssl <address> <port>` (requires nmap)
-// or `nc <address> <port>` if not running under SSL (requires netcat or a busybox with the nc applet built)
+// laim (0.2.6b): a lame mail server
 //
-// originally created by Moon Flower Fields (https://coffin.ir/) or @moonflowerfields on Telegram
+// creator: moon flower fields
+// website: coffin.ir
+// telegram: @moonflowerfields
 
 // very funny.
 #define COMEDIAN false
 
-#define SZ  128
-#define EOF -1
+#define SZ          128
+#define EOF         -1
+#define max_targets 16
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -103,15 +104,31 @@ int get_char() {
 char *glob_buf = NULL;
 u64   glob_sz  = 0;
 
-// clang-format off
-void sadd(cstr s) { char *prev = glob_buf; while (*s) *glob_buf++ = *s++; glob_sz += glob_buf - prev; }
+void sadd(cstr s) {
+    char *prev = glob_buf;
+    while (*s) *glob_buf++ = *s++;
+    glob_sz += glob_buf - prev;
+}
 
 #define over __attribute__((overloadable)) void
-over sit(char *p, cstr s) { glob_buf = p; glob_sz  = 0; sadd(s); }
-over sit(char *p, cstr s, cstr s2) { sit(p, s); sadd(s2); }
-over sit(char *p, cstr s, cstr s2, cstr s3) { sit(p, s); sadd(s2); sadd(s3); }
+over sit(char *p, cstr s) {
+    glob_buf = p;
+    glob_sz  = 0;
+    sadd(s);
+}
+over sit(char *p, cstr s, cstr s2) {
+    sit(p, s);
+    sadd(s2);
+}
+over sit(char *p, cstr s, cstr s2, cstr s3) {
+    sit(p, s);
+    sadd(s2);
+    sadd(s3);
+}
 
-void memzero(char *s, u64 len) { for (u64 i = 0; i < len; i++) s[ i ] = 0; }
+void memzero(char *s, u64 len) {
+    for (u64 i = 0; i < len; i++) s[ i ] = 0;
+}
 
 void nadd(u64 n) {
     if (!n) {
@@ -130,8 +147,11 @@ void nadd(u64 n) {
     glob_buf += len;
     glob_sz += len;
 }
-void nlod(char *p, u64 n) { glob_buf = p; glob_sz = 0; nadd(n); }
-// clang-format on
+void nlod(char *p, u64 n) {
+    glob_buf = p;
+    glob_sz  = 0;
+    nadd(n);
+}
 
 void print_u64(u64 n) {
     static char tmp[ 21 ] = { 0 };
@@ -150,6 +170,18 @@ u64 scan_u64() {
     u64  n = 0;
     char c;
     while ((c = get_char()) != EOF) {
+        if (c < '0' || c > '9') break;
+        n = n * 10 + (c - '0');
+    }
+    return n;
+}
+
+u64 scan_u64_fd(int fd) {
+    if (fd == STDIN_FILENO) return scan_u64(); // avoid buffer skips
+
+    u64  n = 0;
+    char c;
+    while (read(fd, &c, 1) == 1) {
         if (c < '0' || c > '9') break;
         n = n * 10 + (c - '0');
     }
@@ -182,7 +214,6 @@ u64 room_user_count(char *room_path) {
                 int fd = openat(dir_fd, d->d_name, O_RDONLY);
                 if (fd >= 0) {
                     if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
-                        // dead owner
                         flock(fd, LOCK_UN);
                         unlinkat(dir_fd, d->d_name, 0);
                     } else {
@@ -224,7 +255,7 @@ void list_users(int dir_fd, bool rooms) {
                         print_u64(ts);
                         close(login_fd);
                     } else {
-                        writes(" 0\n");
+                        writes("0");
                     }
                 }
                 writes("\n");
@@ -245,7 +276,7 @@ void sopen(int fd) { flock(fd, LOCK_UN); }
     })
 
 void printmail(char path[ SZ ], u64 after) {
-    mkdir(path, 0700); // make it if it doesnt exist
+    mkdir(path, 0700);
 
     int dir_fd = open(path, O_RDONLY | O_DIRECTORY);
     if (dir_fd < 0) return;
@@ -273,21 +304,8 @@ void printmail(char path[ SZ ], u64 after) {
             continue;
         }
 
-        u64  ts = 0;
-        char tsbuf[ 21 ];
-        u64  n = read(mail_fd, tsbuf, sizeof(tsbuf) - 1);
-        if (n <= 0) {
-            close(mail_fd);
-            continue;
-        }
-        tsbuf[ n ] = 0;
-        for (u64 j = 0; j < n; j++) {
-            if (tsbuf[ j ] >= '0' && tsbuf[ j ] <= '9') ts = ts * 10 + (tsbuf[ j ] - '0');
-            else {
-                lseek(mail_fd, j - n, SEEK_CUR);
-                break;
-            }
-        }
+        u64 ts     = scan_u64_fd(mail_fd);
+        u64 expiry = scan_u64_fd(mail_fd);
 
         if (ts < after) {
             close(mail_fd);
@@ -300,13 +318,18 @@ void printmail(char path[ SZ ], u64 after) {
         writeb(header, ++glob_sz);
         nlod(header, ts);
         writeb(header, glob_sz);
+        writes("\n");
 
         static char buf[ 256 ];
         int         r;
         while ((r = read(mail_fd, buf, sizeof(buf))) > 0) writeb(buf, r);
 
         writes("\n\neof\n");
+
         close(mail_fd);
+
+        // expired goods.
+        if (expiry != 0 && expiry < now()) unlinkat(dir_fd, name, 0);
     }
     close(dir_fd);
 }
@@ -341,18 +364,30 @@ const char makefile[] = {
     , 0
 };
 
-// used for both passwords and usernames.
-// not my fault if you wanna use a weird pass.
 bool is_path_char(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.'
            || c == ' ' || c == '$' || c == ':';
 }
 
+int  field_sep  = -1;
+bool field_more = false;
+
 #define read_field(buf, err, fail_action, len_buf)                                                                             \
     ({                                                                                                                         \
         bool _term = false;                                                                                                    \
+        field_more = false;                                                                                                    \
         for (u8 _i = 0; _i < 64; _i++) {                                                                                       \
             int _ch = get_char();                                                                                              \
+            if (_ch == field_sep) {                                                                                            \
+                (buf)[ _i ] = 0;                                                                                               \
+                _term       = true;                                                                                            \
+                field_more  = true;                                                                                            \
+                if (len_buf != NULL) {                                                                                         \
+                    u8 *ptr = len_buf;                                                                                         \
+                    *ptr    = _i;                                                                                              \
+                }                                                                                                              \
+                break;                                                                                                         \
+            }                                                                                                                  \
             if (_ch == '\n' || _ch == EOF) {                                                                                   \
                 (buf)[ _i ] = 0;                                                                                               \
                 _term       = true;                                                                                            \
@@ -374,7 +409,7 @@ bool is_path_char(char c) {
         }                                                                                                                      \
     })
 
-// timing safe or whatever.
+// timing safe
 bool safe_cmp(char *left, char *right, u64 size) {
     bool nonmatch = false;
     bool ended    = false;
@@ -426,6 +461,73 @@ void leave_room() {
         rmdir(filename);
     }
     ephemeral = false;
+}
+
+bool sendmail(char *user, u8 userlen, char *target, char *body, u64 body_len, u64 expiry) {
+    char dest_path[ SZ ] = { 0 };
+    sit(dest_path, "mail/", target, "/");
+    mkdir(dest_path, 0700);
+
+    int dir_fd = open(dest_path, O_RDONLY | O_DIRECTORY);
+    if (dir_fd < 0) {
+        writes("err:dir\n");
+        return false;
+    }
+    slock(dir_fd);
+
+    u64 index = create_index(dir_fd);
+    if (index == -1) {
+        writes("!");
+        sopen(dir_fd);
+        close(dir_fd);
+        return false;
+    }
+    sit(dest_path, "mail/", target, "/");
+    nadd(index);
+
+    int user_fd = smake(dest_path);
+    if (user_fd < 0) {
+        sopen(dir_fd);
+        close(dir_fd);
+        writes("err:smake\n");
+        return false;
+    }
+    slock(user_fd);
+    sopen(dir_fd);
+    close(dir_fd);
+
+    char *ts = str_u64(now());
+    write(user_fd, ts, lenstr(ts));
+    write(user_fd, "\n", 1);
+    char *ex = str_u64(expiry);
+    write(user_fd, ex, lenstr(ex));
+    write(user_fd, "\n", 1);
+    write(user_fd, user, userlen);
+    write(user_fd, "\n", 1);
+    write(user_fd, body, body_len);
+
+    sopen(user_fd);
+    close(user_fd);
+
+    return true;
+}
+
+char *read_body(u64 *body_len_out) {
+    static char body[ 65536 ];
+    u64         body_len   = 0;
+    char        buf[ 256 ] = { 0 };
+    int         read_size;
+    while ((read_size = readn(buf, sizeof(buf))) > 0) {
+        if (body_len + read_size > sizeof(body)) {
+            writes(".");
+            *body_len_out = 0;
+            return NULL;
+        }
+        memcopy(body + body_len, buf, read_size);
+        body_len += read_size;
+    }
+    *body_len_out = body_len;
+    return body;
 }
 
 int main(int argc, char **argv) {
@@ -507,6 +609,22 @@ laim_start:;
         memcopy(user_path + 6, user, userlen);
         user_path[ 6 + userlen ] = 0;
 
+        // check lastlogin before sleeping
+        char last_login[ SZ ] = { 0 };
+        sit(last_login, "mail/", user, "/.login");
+        *glob_buf = 0;
+        {
+            int login_fd = open(last_login, O_RDONLY);
+            u64 old_ts = 0, old_pid = 0;
+            if (login_fd >= 0) {
+                read(login_fd, &old_ts, 8);
+                read(login_fd, &old_pid, 8);
+                close(login_fd);
+            }
+            if (old_pid > 0) syscall(62, old_pid, 9); // kill old
+            if (now() - old_ts < 5) sleep(1); // fly swatter
+        }
+
         if (access(user_path, F_OK) != 0) {
             writes("N");
             goto laim_start;
@@ -544,8 +662,10 @@ laim_start:;
         int login_fd = open(last_login, O_RDWR | O_CREAT, 0600);
         if (login_fd >= 0) {
             ftruncate(login_fd, 0);
-            u64 ts = now();
-            write(login_fd, &ts, 8);
+            u64 ts  = now();
+            u64 pid = syscall(39); // getpid
+            write(login_fd, &ts,  8);
+            write(login_fd, &pid, 8);
             close(login_fd);
         }
     }
@@ -569,6 +689,7 @@ laim_start:;
 
     int _c;
     while ((_c = get_char()) != EOF) {
+        field_sep = -1;
         if (_c == '\n') continue;
         char c = _c;
         if (c == 'G') { // get all mail
@@ -639,69 +760,57 @@ laim_start:;
             }
             list_users(dir_fd, c == 'R');
             close(dir_fd);
+            writes("O");
         } else if (c == 'T') { // get mail after X
             printmail(filename, scan_u64());
-        } else if (c == 'S') { // send mail
-            char target[ SZ ];
-            read_field(target, "7", goto while_end, NULL);
+            writes("O");
+        } else if (c == 'S') {
+            char targets[ max_targets ][ SZ ];
+            u8   target_count = 0;
 
-            char dest_path[ SZ ] = { 0 };
-            sit(dest_path, "mail/", target, "/");
-            mkdir(dest_path, 0700);
-
-            int dir_fd = open(dest_path, O_RDONLY | O_DIRECTORY);
-            if (dir_fd < 0) {
-                writes("err:dir\n");
-                continue;
+            field_sep  = ',';
+            field_more = true;
+            while (field_more && target_count < max_targets) {
+                read_field(targets[ target_count ], "7", goto while_end, NULL);
+                if (targets[ target_count ][ 0 ]) target_count++;
             }
-            slock(dir_fd);
+            field_sep = -1;
 
-            u64 index = create_index(dir_fd);
-            if (index == -1) {
+            u64   body_len;
+            char *body = read_body(&body_len);
+            if (!body) goto while_end; // limit
+
+            for (u8 i = 0; i < target_count; i++) {
+                if (sendmail(user, userlen, targets[ i ], body, body_len, 0)) continue;
                 writes("!");
-                sopen(dir_fd);
-                close(dir_fd);
-                continue;
+                goto while_end;
             }
-            sit(dest_path, "mail/", target, "/");
-            nadd(index);
+            writes("O");
+        } else if (c == 'H') { // perishable post
+            char targets[ max_targets ][ SZ ];
+            u8   target_count = 0;
 
-            int user_fd = smake(dest_path);
-            if (user_fd < 0) {
-                sopen(dir_fd);
-                close(dir_fd);
-                writes("err:smake\n");
-                continue;
+            field_sep  = ',';
+            field_more = true;
+            while (field_more && target_count < max_targets) {
+                read_field(targets[ target_count ], "7", goto while_end, NULL);
+                if (targets[ target_count ][ 0 ]) target_count++;
             }
-            slock(user_fd);
-            sopen(dir_fd);
-            close(dir_fd);
+            field_sep = -1;
 
-            char *ts = str_u64(now());
-            write(user_fd, ts, lenstr(ts));
-            write(user_fd, "\n", 1);
-            write(user_fd, user, userlen);
-            write(user_fd, "\n", 1);
+            u64 ttl    = scan_u64();
+            u64 expiry = ttl ? now() + ttl : 0;
 
-            bool hit_limit = false;
+            u64   body_len;
+            char *body = read_body(&body_len);
+            if (!body) goto while_end; // limit
 
-            u64  total_size = 0;
-            char buf[ 256 ] = { 0 };
-            int  read_size;
-            while ((read_size = readn(buf, sizeof(buf))) > 0) {
-                write(user_fd, buf, read_size);
-                total_size += read_size;
-                if (total_size > 65536) {
-                    hit_limit = true;
-                    writes(".");
-                    break;
-                }
+            for (u8 i = 0; i < target_count; i++) {
+                if (sendmail(user, userlen, targets[ i ], body, body_len, expiry)) continue;
+                writes("!");
+                goto while_end;
             }
-
-            if (!hit_limit) writes("O");
-
-            sopen(user_fd);
-            close(user_fd);
+            writes("O");
         } else if (c == 'D') { // delete mail
             u64 index = scan_u64();
 
@@ -717,7 +826,7 @@ laim_start:;
             read_field(newpass2, "7", goto while_end, &passlen2);
 
             if (passlen != passlen2) err("K");
-            if (safe_cmp(newpass, newpass2, passlen)) err("K");
+            if (!safe_cmp(newpass, newpass2, passlen)) err("K");
 
             char user_path[ SZ ] = "users/";
             memcopy(user_path + 6, user, userlen);
