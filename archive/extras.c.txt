@@ -1,0 +1,11 @@
+// useless file.
+
+cstr getenv(cstr name) {
+    extern cstr *environ;
+    size_t len = lenstr(name);
+    for (char **e = environ; *e; e++) {
+        if (safe_cmp(*e, name, len) && (*e)[len] == '=')
+            return *e + len + 1;
+    }
+    return NULL;
+}
