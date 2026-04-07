@@ -1,4 +1,4 @@
-// laim (0.2.6b2): a lame mail server
+// laim (0.2.6b3): a lame mail server
 //
 // creator: moon flower fields
 // website: coffin.ir
@@ -48,6 +48,8 @@ size_t lenstr(cstr s) {
     for (s = (const void *) w; *s; s++);
     return s - a;
 }
+
+const u64 zero = 0;
 
 char out_buf[ 4096 ];
 int  out_pos = 0;
@@ -412,7 +414,7 @@ bool field_more = false;
     })
 
 // timing safe
-bool safe_cmp(char *left, char *right, u64 size) {
+bool safe_cmp(cstr left, cstr right, u64 size) {
     bool nonmatch = false;
     bool ended    = false;
     for (u64 i = 0; i < size; i++) {
@@ -542,8 +544,17 @@ bool intersleep(u64 ms) {
     return r == 0;
 }
 
+int *__errno_location(void);
+void counter(const char *path) {
+    if (access(path, F_OK) == 0) return;
+    int fd = open(path, O_WRONLY | O_CREAT, 0700);
+    write(fd, &zero, 8);
+    close(fd);
+}
+
 int main(int argc, char **argv) {
     if (argc > 1) {
+        bool blim = safe_cmp(argv[ 1 ], "--blim", 6);
         if (safe_cmp(argv[ 1 ], "--help", 6) || safe_cmp(argv[ 1 ], "-h", 2)) {
             writes(
                 "laim: lame mail server\n"
@@ -570,25 +581,36 @@ int main(int argc, char **argv) {
                 " --boot <bind_addr> <bind_port> <ssl_joint_path>\n"
                 "        re-runs laim, wrapped with ssl_server and tcpsvd, provided a busybox with those applets is "
                 "installed.\n"
+                "        this parameter has an equivalent, --blim, which only allows up to 16 connections from the same ip.\n"
                 "\n");
+            flush();
             return 1;
         } else if (safe_cmp(argv[ 1 ], "--open", 6)) {
             openwrite("laim.c", source);
             openwrite("docs.txt", docs);
             openwrite("Makefile", makefile);
             writes("done\n");
+            flush();
             return 1;
-        } else if (safe_cmp(argv[ 1 ], "--boot", 6)) {
+        } else if (safe_cmp(argv[ 1 ], "--boot", 6) || blim) {
             if (argc != 5) {
                 writes("too many / too little args, read --help\n");
+                flush();
                 return 1;
             }
-            char  path[ 4096 ] = { 0 };
-            u64   bye          = readlink("/proc/self/exe", path, sizeof(path) - 1);
-            char *new_argv[]   = { "tcpsvd", "-v", argv[ 2 ], argv[ 3 ], "ssl_server", "-f", argv[ 4 ], path };
-            execvp("busybox", new_argv);
+            char  path[ 4096 ]    = { 0 };
+            u64   bye             = readlink("/proc/self/exe", path, sizeof(path) - 1);
+            char *new_argv[]      = { "tcpsvd", "-v", argv[ 2 ], argv[ 3 ], "ssl_server", "-f", argv[ 4 ], path, NULL };
+            char *new_argv_blim[] = { "tcpsvd", "-v",      "-c",      "2048", "-C", "16",      argv[ 2 ], argv[ 3 ], "ssl_server",
+                                      "-f",     argv[ 4 ], path, NULL };
+            execvp("busybox", blim ? new_argv_blim : new_argv);
+            writes("failed to start. errno: ");
+            print_u64((*__errno_location()));
+            flush();
+            return 1;
         } else {
             writes("unknown arg\n");
+            flush();
             return 1;
         }
     }
@@ -602,6 +624,7 @@ int main(int argc, char **argv) {
     // mail/     - mails directory, each filename is a username
     mkdir("users", 0700);
     mkdir("mail", 0700);
+    mkdir("limits", 0700);
 
 laim_start:;
     memzero(user, 65);
@@ -692,6 +715,7 @@ laim_start:;
 
     char user_count_filename[ SZ ] = { 0 };
     sit(user_count_filename, user_filename, ".count");
+    counter(user_count_filename);
 
     static char room_path[ SZ ]       = { 0 };
     static char room_count_path[ SZ ] = { 0 };
@@ -738,7 +762,6 @@ laim_start:;
             *glob_buf = 0;
             int cfd   = open(room_count_path, O_RDWR | O_CREAT | O_EXCL, 0600);
             if (cfd >= 0) {
-                u64 zero = 0;
                 write(cfd, &zero, 8);
                 close(cfd);
             }
@@ -931,5 +954,6 @@ laim_start:;
     while_end:;
     }
 
+    flush();
     return 0;
 }
