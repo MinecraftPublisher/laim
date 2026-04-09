@@ -46,6 +46,7 @@ S                    csv:targets body            sends mail                     
 H                    csv:targets num:ttl body    sends mail with an expiry date (targets, ttl, body)       7|.|!|O
 W                                                returns who you are (may get funky)                       str+\n
 E                                                count inbox size (including deleted mail)                 num+\n
+Z                                                print room topic                                          (str+\n)|!
 U                                                list all users on this instance                           "name lastlogin\n"[]+O
 R                                                list all rooms on this instance                           "title onlinecount\n"[]+O
 B                    [str]:roomname              enter a room                                              O

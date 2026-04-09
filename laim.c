@@ -1,4 +1,4 @@
-// laim (0.2.6b3): a lame mail server
+// laim (0.2.6b4): a lame mail server
 //
 // creator: moon flower fields
 // website: coffin.ir
@@ -598,11 +598,11 @@ int main(int argc, char **argv) {
                 flush();
                 return 1;
             }
-            char  path[ 4096 ]    = { 0 };
-            u64   bye             = readlink("/proc/self/exe", path, sizeof(path) - 1);
-            char *new_argv[]      = { "tcpsvd", "-v", argv[ 2 ], argv[ 3 ], "ssl_server", "-f", argv[ 4 ], path, NULL };
-            char *new_argv_blim[] = { "tcpsvd", "-v",      "-c",      "2048", "-C", "16",      argv[ 2 ], argv[ 3 ], "ssl_server",
-                                      "-f",     argv[ 4 ], path, NULL };
+            char  path[ 4096 ] = { 0 };
+            u64   bye          = readlink("/proc/self/exe", path, sizeof(path) - 1);
+            char *new_argv[]   = { "tcpsvd", "-v", argv[ 2 ], argv[ 3 ], "ssl_server", "-f", argv[ 4 ], path, NULL };
+            char *new_argv_blim[]
+                = { "tcpsvd", "-v", "-c", "2048", "-C", "16", argv[ 2 ], argv[ 3 ], "ssl_server", "-f", argv[ 4 ], path, NULL };
             execvp("busybox", blim ? new_argv_blim : new_argv);
             writes("failed to start. errno: ");
             print_u64((*__errno_location()));
@@ -624,7 +624,6 @@ int main(int argc, char **argv) {
     // mail/     - mails directory, each filename is a username
     mkdir("users", 0700);
     mkdir("mail", 0700);
-    mkdir("limits", 0700);
 
 laim_start:;
     memzero(user, 65);
@@ -746,6 +745,17 @@ laim_start:;
             }
             close(count_fd);
             print_u64(result);
+            writes("\n");
+        } else if (c == 'Z') {
+            static char topic_filename[ SZ ] = { 0 };
+            sit(topic_filename, filename, ".topic");
+            int topic_fd = open(topic_filename, O_RDONLY);
+            if (topic_fd < 0) err("!");
+
+            char buf[ 256 ];
+            int  r;
+            while ((r = read(topic_fd, buf, sizeof(buf))) > 0) writeb(buf, r);
+            close(topic_fd);
             writes("\n");
         } else if (c == 'B') {
             leave_room();
