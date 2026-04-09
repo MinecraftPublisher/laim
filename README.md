@@ -1,6 +1,6 @@
 # laim
 
-a tiny, lame, mail client.
+a tiny, lame, mail server.
 
 did you know? mail backwards is laim!
 
