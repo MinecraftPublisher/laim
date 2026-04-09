@@ -1,5 +1,9 @@
 -- news
 
+2026-04-09 #0.3.0
+adds index fetching, room topics, polling mail, --blim
+version header has changed
+
 2026-04-05 #0.2.6b, #0.2.6b2
 adds expiring mail, with command 'H'
 new, experimental docs.
@@ -8,7 +12,7 @@ slightly hardened login paths
 
 
 -- proto
-v=2 (this is sent as a byte, not ascii)
+v=3 (this is sent as ascii)
 
 
 CONNECT
@@ -41,6 +45,7 @@ L                    str:user str:password       attempt a login (penalty for wr
 
 COMMANDS             ARGS                        DESCRIPTION                                               RETURN
 G                                                returns all mail                                          mail[]+O
+F                    csv:indexes                 return mails with given indexes                           (mail[]+O)|!
 T                    num:timestamp               returns mail after a timestamp                            mail[]+O
 S                    csv:targets body            sends mail                                                7|.|!|O
 H                    csv:targets num:ttl body    sends mail with an expiry date (targets, ttl, body)       7|.|!|O

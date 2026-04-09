@@ -1,4 +1,4 @@
-// laim (0.2.6b4): a lame mail server
+// laim (0.3.0): a lame mail server
 //
 // creator: moon flower fields
 // website: coffin.ir
@@ -279,6 +279,44 @@ void sopen(int fd) { flock(fd, LOCK_UN); }
         continue;                                                                                                              \
     })
 
+void printindex(int dir_fd, char *name, u64 after) {
+    int mail_fd = openat(dir_fd, name, O_RDONLY);
+    if (mail_fd < 0) return;
+    flock(mail_fd, LOCK_SH);
+
+    struct stat st;
+    fstat(mail_fd, &st);
+    if (st.st_size == 0) {
+        close(mail_fd);
+        return;
+    }
+
+    u64 ts     = scan_u64_fd(mail_fd);
+    u64 expiry = scan_u64_fd(mail_fd);
+
+    if (ts < after) {
+        close(mail_fd);
+        return;
+    }
+
+    static char header[ SZ ] = { 0 };
+    sit(header, name, "\n");
+    writeb(header, glob_sz);
+    print_u64(ts);
+    writes("\n");
+
+    static char buf[ 256 ];
+    int         r;
+    while ((r = read(mail_fd, buf, sizeof(buf))) > 0) writeb(buf, r);
+
+    writes("\n\neof\n");
+
+    close(mail_fd);
+
+    // expired goods.
+    if (expiry != 0 && expiry < now()) unlinkat(dir_fd, name, 0);
+}
+
 void printmail(char path[ SZ ], u64 after) {
     mkdir(path, 0700);
 
@@ -295,46 +333,7 @@ void printmail(char path[ SZ ], u64 after) {
     read(cfd, &total, sizeof(u64));
     close(cfd);
 
-    for (u64 i = 0; i < total; i++) {
-        char *name    = str_u64(i);
-        int   mail_fd = openat(dir_fd, name, O_RDONLY);
-        if (mail_fd < 0) continue;
-        flock(mail_fd, LOCK_SH);
-
-        struct stat st;
-        fstat(mail_fd, &st);
-        if (st.st_size == 0) {
-            close(mail_fd);
-            continue;
-        }
-
-        u64 ts     = scan_u64_fd(mail_fd);
-        u64 expiry = scan_u64_fd(mail_fd);
-
-        if (ts < after) {
-            close(mail_fd);
-            continue;
-        }
-
-        static char header[ SZ ] = { 0 };
-        nlod(header, i);
-        *glob_buf++ = '\n';
-        writeb(header, ++glob_sz);
-        nlod(header, ts);
-        writeb(header, glob_sz);
-        writes("\n");
-
-        static char buf[ 256 ];
-        int         r;
-        while ((r = read(mail_fd, buf, sizeof(buf))) > 0) writeb(buf, r);
-
-        writes("\n\neof\n");
-
-        close(mail_fd);
-
-        // expired goods.
-        if (expiry != 0 && expiry < now()) unlinkat(dir_fd, name, 0);
-    }
+    for (u64 i = 0; i < total; i++) { printindex(dir_fd, str_u64(i), after); }
     close(dir_fd);
 }
 
@@ -617,7 +616,7 @@ int main(int argc, char **argv) {
 
     char user[ 65 ] = { 0 }, pass[ 65 ] = { 0 };
     u8   userlen = 0;
-    writes("laim\2\n");
+    writes("laim3\n");
 
     // manipulates:
     // users/    - user db, manually add users
@@ -730,6 +729,21 @@ laim_start:;
         if (c == 'G') { // get all mail
             printmail(filename, 0);
             writes("O");
+        } else if (c == 'F') { // get indexed mail
+            int dir_fd = open(filename, O_RDONLY | O_DIRECTORY);
+            if (dir_fd < 0) err("!");
+            field_sep       = ',';
+            field_more      = true;
+            bool field_fail = false;
+            while (field_more && !field_fail) {
+                char idx[ SZ ];
+                read_field(idx, "7", field_fail = true; goto index_mail_end, NULL);
+                if (idx[ 0 ]) printindex(dir_fd, idx, 0);
+            }
+        index_mail_end:
+            field_sep = -1;
+            close(dir_fd);
+            if (!field_fail) writes("O");
         } else if (c == 'W') { // whoami
             if (COMEDIAN) writes("you're... you!");
             else { writes(user); }
